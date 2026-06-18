@@ -31,6 +31,14 @@
   .tab.active-ad  { color: var(--accent-ad);  border-bottom-color: var(--accent-ad); }
   .tab.active-all { color: var(--accent3);    border-bottom-color: var(--accent3); }
 
+  .search-row { padding: 14px 20px 0; display: flex; gap: 8px; align-items: center; }
+  .search-input { flex: 1; padding: 9px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font-size: 13px; font-family: 'Noto Sans TC', sans-serif; outline: none; transition: border-color 0.15s; }
+  .search-input::placeholder { color: var(--text-muted); font-size: 12px; }
+  .search-input:focus { border-color: var(--accent3); }
+  .search-clear { width: 34px; height: 34px; flex-shrink: 0; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text-muted); font-size: 13px; cursor: pointer; display: none; }
+  .search-clear.visible { display: block; }
+  .search-clear:hover { border-color: var(--accent-red); color: var(--accent-red); }
+
   .filter-panel { padding: 14px 20px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--border); }
   .filter-row { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
   .filter-label { font-size: 11px; font-weight: 700; color: var(--text-muted); letter-spacing: 1px; min-width: 20px; margin-top: 5px; }
@@ -109,6 +117,11 @@
   <div class="tab" data-type="ad">Adaptor</div>
 </div>
 
+<div class="search-row">
+  <input type="text" id="searchInput" class="search-input" placeholder="輸入 W 數 / V 數 / 型號搜尋，例：300、48、TN22">
+  <button class="search-clear" id="searchClearBtn" title="清除搜尋">✕</button>
+</div>
+
 <div class="filter-panel">
   <div class="filter-row">
     <div class="filter-label">W</div>
@@ -117,10 +130,6 @@
   <div class="filter-row">
     <div class="filter-label">V</div>
     <div class="btn-group" id="voltBtns"></div>
-  </div>
-  <div class="filter-row">
-    <div class="filter-label">業</div>
-    <div class="btn-group" id="indBtns"></div>
   </div>
 </div>
 
@@ -196,7 +205,8 @@ const allData = [...openFrame, ...enclosed, ...adaptor];
 
 // ── state ─────────────────────────────────────────────────
 let activeTab = "all";
-let activeWatt = null, activeVolt = null, activeInd = null;
+let activeWatt = null;
+let activeVolts = [];   // 複選
 let searchQ = "";
 
 // ── helpers ───────────────────────────────────────────────
@@ -207,16 +217,46 @@ function getActiveData() {
   return allData;
 }
 
-function voltageMatch(item, v) {
-  return item.voltage.includes(v);
+// 取得單一產品的電壓數值陣列
+function voltNums(item) {
+  const out = [];
+  item.voltage.split(/[\/,()]/).forEach(seg => {
+    const s = seg.trim().replace(/[^0-9.]/g,'');
+    const n = parseFloat(s);
+    if (!isNaN(n)) out.push(n);
+  });
+  return out;
+}
+
+// watt 字串 → 數值（取第一個數字）
+function wattNum(w) {
+  const m = String(w).match(/[\d.]+/);
+  return m ? parseFloat(m[0]) : 0;
 }
 
 function getFiltered() {
   let data = getActiveData();
   if (activeWatt) data = data.filter(d => d.watt === activeWatt);
-  if (activeVolt) data = data.filter(d => voltageMatch(d, activeVolt));
-  if (activeInd)  data = data.filter(d => d.industry.includes(activeInd));
-  if (searchQ)    data = data.filter(d => d.model.toLowerCase().includes(searchQ.toLowerCase()));
+  if (activeVolts.length) data = data.filter(d => {
+    const nums = voltNums(d);
+    return activeVolts.some(v => nums.includes(parseFloat(v)));
+  });
+  if (searchQ) {
+    const q = searchQ.trim().toLowerCase();
+    data = data.filter(d => {
+      // 型號比對
+      if (d.model.toLowerCase().includes(q)) return true;
+      // W 數比對（純數字時）
+      const qn = parseFloat(q);
+      if (!isNaN(qn)) {
+        if (wattNum(d.watt) === qn) return true;
+        if (voltNums(d).includes(qn)) return true;
+      }
+      // W字串比對（如 "300w"）
+      if (d.watt.toLowerCase().includes(q)) return true;
+      return false;
+    });
+  }
   return data;
 }
 
@@ -224,7 +264,10 @@ function getFiltered() {
 function getOptions(field) {
   const data = getActiveData();
   const seen = new Set();
-  return data.map(d => d[field]).filter(v => { if (seen.has(v)) return false; seen.add(v); return true; });
+  const arr = data.map(d => d[field]).filter(v => { if (seen.has(v)) return false; seen.add(v); return true; });
+  // W 數由小到大排序
+  if (field === "watt") arr.sort((a,b) => wattNum(a) - wattNum(b));
+  return arr;
 }
 
 function getVoltOptions() {
@@ -232,24 +275,18 @@ function getVoltOptions() {
   const seen = new Set();
   const out = [];
   data.forEach(d => {
-    d.voltage.split(/[\/,()]/).forEach(seg => {
-      const s = seg.trim().replace(/[^0-9.V]/g,'');
-      const n = parseFloat(s);
-      if (!isNaN(n) && !seen.has(n)) { seen.add(n); out.push(n); }
-    });
+    voltNums(d).forEach(n => { if (!seen.has(n)) { seen.add(n); out.push(n); } });
   });
-  return out.sort((a,b)=>a-b).map(n => n % 1 === 0 ? String(n) : String(n));
+  return out.sort((a,b)=>a-b).map(n => String(n));
 }
 
 // ── render filter buttons ─────────────────────────────────
 function renderFilters() {
   const wOpts = getOptions("watt");
   const vOpts = getVoltOptions();
-  const iOpts = ["工業","網通","5G網通","電競主機","醫療"].filter(x => getActiveData().some(d => d.industry.includes(x)));
 
   renderBtnGroup("wattBtns", wOpts, activeWatt, v => { activeWatt = activeWatt===v?null:v; renderAll(); });
-  renderBtnGroup("voltBtns", vOpts, activeVolt, v => { activeVolt = activeVolt===v?null:v; renderAll(); });
-  renderBtnGroup("indBtns",  iOpts, activeInd,  v => { activeInd  = activeInd===v?null:v; renderAll(); });
+  renderVoltGroup("voltBtns", vOpts);
 }
 
 function renderBtnGroup(id, opts, active, onClick) {
@@ -258,12 +295,23 @@ function renderBtnGroup(id, opts, active, onClick) {
   el.querySelectorAll('.filter-btn').forEach(b => b.addEventListener('click', () => onClick(b.dataset.val)));
 }
 
+// V 複選按鈕
+function renderVoltGroup(id, opts) {
+  const el = document.getElementById(id);
+  el.innerHTML = opts.map(v => `<button class="filter-btn${activeVolts.includes(String(v))?' active':''}" data-val="${v}">${v}</button>`).join('');
+  el.querySelectorAll('.filter-btn').forEach(b => b.addEventListener('click', () => {
+    const v = b.dataset.val;
+    if (activeVolts.includes(v)) activeVolts = activeVolts.filter(x => x !== v);
+    else activeVolts.push(v);
+    renderAll();
+  }));
+}
+
 // ── render active tags ────────────────────────────────────
 function renderTags() {
   const tags = [];
   if (activeWatt) tags.push({label:"W: "+activeWatt, clear:()=>{activeWatt=null;renderAll();}});
-  if (activeVolt) tags.push({label:"V: "+activeVolt, clear:()=>{activeVolt=null;renderAll();}});
-  if (activeInd)  tags.push({label:"業: "+activeInd, clear:()=>{activeInd=null;renderAll();}});
+  activeVolts.forEach(v => tags.push({label:"V: "+v, clear:()=>{activeVolts=activeVolts.filter(x=>x!==v);renderAll();}}));
   const wrap = document.getElementById("activeTagsWrap");
   wrap.innerHTML = tags.map((_,i)=>`<div class="active-tag"><span>${tags[i].label}</span><span class="rm" data-i="${i}">✕</span></div>`).join('');
   wrap.querySelectorAll('.rm').forEach(r => r.addEventListener('click', () => tags[+r.dataset.i].clear()));
@@ -344,15 +392,32 @@ document.getElementById("tabBar").addEventListener("click", e => {
   const tab = e.target.closest(".tab");
   if (!tab) return;
   activeTab = tab.dataset.type;
-  activeWatt = null; activeVolt = null; activeInd = null;
+  activeWatt = null; activeVolts = [];
   document.querySelectorAll(".tab").forEach(t => t.className = "tab");
   tab.className = `tab active-${activeTab}`;
   renderAll();
 });
 
 document.getElementById("clearAllBtn").addEventListener("click", () => {
-  activeWatt = null; activeVolt = null; activeInd = null;
+  activeWatt = null; activeVolts = [];
   renderAll();
+});
+
+// ── 手動搜尋框 ────────────────────────────────────────────
+const searchInput = document.getElementById("searchInput");
+const searchClearBtn = document.getElementById("searchClearBtn");
+searchInput.addEventListener("input", () => {
+  searchQ = searchInput.value;
+  if (searchQ) searchClearBtn.classList.add("visible");
+  else searchClearBtn.classList.remove("visible");
+  renderCards();
+});
+searchClearBtn.addEventListener("click", () => {
+  searchInput.value = "";
+  searchQ = "";
+  searchClearBtn.classList.remove("visible");
+  searchInput.focus();
+  renderCards();
 });
 
 renderAll();
